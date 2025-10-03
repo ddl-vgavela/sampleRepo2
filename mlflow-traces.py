@@ -27,7 +27,7 @@ if __name__ == "__main__":
     # logger.setLevel(logging.DEBUG)
 
     # mlflow.set_tracking_uri("http://localhost:8910")
-    mlflow.set_experiment("Gemini with OpenAI")
+    mlflow.set_experiment("Gemini with OpenAI3")
     
     with mlflow.start_run() as run:
         print("run id " + run.info.run_id)
