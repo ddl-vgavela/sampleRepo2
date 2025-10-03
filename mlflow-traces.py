@@ -1,7 +1,5 @@
 import mlflow
 import os
-import mlflow.openai
-import openai
 from packaging.version import Version
 import logging
 
@@ -28,7 +26,6 @@ if __name__ == "__main__":
     # Set log level to debugging
     # logger.setLevel(logging.DEBUG)
 
-    mlflow.openai.autolog()
     # mlflow.set_tracking_uri("http://localhost:8910")
     mlflow.set_experiment("Gemini with OpenAI")
     
