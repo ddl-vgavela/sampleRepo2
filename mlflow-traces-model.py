@@ -1,68 +1,82 @@
 import mlflow
 import mlflow.pyfunc
-from mlflow.models import infer_signature
 import numpy as np
 import pandas as pd
+from mlflow.models import infer_signature
 
-# ── Configuration ──────────────────────────────────────────────────────────────
-EXPERIMENT_NAME = "demo-experiment-with-traces"
-mlflow.set_tracking_uri("http://localhost:5000")  # adjust to your tracking server
+# ── Setup ──────────────────────────────────────────────────────────────────────
+# For local tracking (no server needed), remove the line below.
+# mlflow.set_tracking_uri("http://localhost:5000")
+
+EXPERIMENT_NAME = "demo-experiment"
 mlflow.set_experiment(EXPERIMENT_NAME)
 
-# ── A simple model to log ──────────────────────────────────────────────────────
+print(f"MLflow version: {mlflow.__version__}")
+
+
+# ── Simple PyfuncModel ─────────────────────────────────────────────────────────
 class SimpleModel(mlflow.pyfunc.PythonModel):
-    def predict(self, context, model_input):
-        return model_input * 2.0
-
-
-# ── Helper: a traced function ──────────────────────────────────────────────────
-@mlflow.trace(name="preprocess", span_type="FUNC")
-def preprocess(data: np.ndarray) -> np.ndarray:
-    return data / data.max()
-
-
-@mlflow.trace(name="run_inference", span_type="LLM")
-def run_inference(model, data: np.ndarray) -> np.ndarray:
-    df = pd.DataFrame(data, columns=[f"feature_{i}" for i in range(data.shape[1])])
-    return model.predict(df)
+    def predict(self, context, model_input, params=None):
+        return (model_input * 2.0).values
 
 
 # ── Main run ───────────────────────────────────────────────────────────────────
-with mlflow.start_run(run_name="traced-run-with-model") as run:
-    print(f"Run ID: {run.info.run_id}")
+with mlflow.start_run(run_name="experiment-with-model") as run:
+    run_id = run.info.run_id
+    print(f"Run ID: {run_id}")
 
-    # Log hyperparameters and metrics
-    mlflow.log_param("n_samples", 100)
-    mlflow.log_param("n_features", 4)
-    mlflow.log_metric("accuracy", 0.92)
-    mlflow.log_metric("loss", 0.08)
+    # -- Parameters & metrics
+    mlflow.log_params({
+        "n_samples": 100,
+        "n_features": 4,
+        "learning_rate": 0.01,
+    })
+    mlflow.log_metrics({
+        "accuracy": 0.92,
+        "loss": 0.08,
+        "f1_score": 0.89,
+    })
 
-    # Generate sample data
+    # -- Sample data
     rng = np.random.default_rng(42)
-    X = rng.random((100, 4))
+    cols = [f"feature_{i}" for i in range(4)]
+    X = pd.DataFrame(rng.random((100, 4)), columns=cols)
     y = rng.random(100)
 
-    # ── Traced calls ────────────────────────────────────────────────────────────
-    # These produce spans visible in the MLflow UI under the Traces tab
-    X_processed = preprocess(X)
+    # -- Log a dataset artifact (optional but useful)
+    X.to_csv("dataset.csv", index=False)
+    mlflow.log_artifact("dataset.csv")
 
-    model_instance = SimpleModel()
-    predictions = run_inference(model_instance, X_processed)
+    # -- Train/fit and log model
+    model = SimpleModel()
+    sample_output = model.predict(None, X[:5])
+    signature = infer_signature(X, sample_output)
 
-    # ── Log the model ───────────────────────────────────────────────────────────
-    signature = infer_signature(
-        pd.DataFrame(X, columns=[f"feature_{i}" for i in range(X.shape[1])]),
-        predictions,
-    )
-
-    mlflow.pyfunc.log_model(
+    model_info = mlflow.pyfunc.log_model(
         artifact_path="model",
-        python_model=model_instance,
+        python_model=model,
         signature=signature,
-        input_example=pd.DataFrame(X[:5], columns=[f"feature_{i}" for i in range(X.shape[1])]),
+        input_example=X[:5],
     )
 
-    print(f"Model URI: runs:/{run.info.run_id}/model")
-    print(f"View run at: {mlflow.get_tracking_uri()}/#/experiments/.../runs/{run.info.run_id}")
+    print(f"Model logged at: {model_info.model_uri}")
 
-print("Done. Check the MLflow UI → Experiments and Traces tabs.")
+    # -- Add traces manually (works on MLflow >= 2.x without tracing extras)
+    with mlflow.start_span("preprocess") as span:
+        span.set_inputs({"shape": list(X.shape)})
+        X_norm = X / X.max()
+        span.set_outputs({"shape": list(X_norm.shape), "max_val": float(X_norm.max().max())})
+        span.set_attribute("step", "normalization")
+
+    with mlflow.start_span("inference") as span:
+        span.set_inputs({"n_rows": len(X_norm)})
+        preds = model.predict(None, X_norm)
+        span.set_outputs({"n_predictions": len(preds), "sample": preds[:3].tolist()})
+        span.set_attribute("step", "model_predict")
+
+print("\n✅ Done!")
+print(f"  Run ID  : {run_id}")
+print(f"  Model   : runs:/{run_id}/model")
+print(f"\nTo load model:")
+print(f'  loaded = mlflow.pyfunc.load_model("runs:/{run_id}/model")')
+print(f'  loaded.predict(X)')
